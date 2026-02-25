@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir:*)",
+      "Bash(cmd /c:*)",
+      "Bash(git init:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(pip uninstall:*)",
+      "Bash(find:*)",
+      "mcp__ide__getDiagnostics",
+      "Bash(git status:*)",
+      "Bash(grep:*)",
+      "Bash(python3:*)",
+      "Bash(python:*)",
+      "Bash(powershell -Command:*)",
+      "Bash(npm config get proxy)",
+      "Bash(npm config get:*)",
+      "Bash(npm config:*)",
+      "Bash(npm config rm:*)",
+      "Bash(npm install:*)",
+      "Bash(claude:*)",
+      "Bash(pip install:*)",
+      "Bash(head:*)",
+      "Bash(wc:*)",
+      "Bash(git:*)",
+      "Bash(cd E:\\\\工作\\\\工作台\\\\带货视频生成:*)",
+      "Bash(xargs -I{} git log --all --find-object={} --pretty=format: --name-only)"
+    ]
+  }
+}
