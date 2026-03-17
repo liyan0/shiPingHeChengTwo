@@ -79,3 +79,9 @@ models/
 
 # 本地输入素材和数据（不提交到远程）
 input/
+
+# 本地IDE配置
+.claude/
+
+# 开发文档
+docs/
