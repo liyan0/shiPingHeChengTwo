@@ -1,8 +1,20 @@
 import asyncio
 import os
 import random
+import subprocess
+import sys
 import time
+import logging
 from datetime import datetime
+
+# 设置文件日志
+_log_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "error_log.txt")
+_logger = logging.getLogger("home_page")
+if not _logger.handlers:
+    _handler = logging.FileHandler(_log_file, encoding='utf-8')
+    _handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+    _logger.addHandler(_handler)
+    _logger.setLevel(logging.DEBUG)
 
 from PyQt5.QtWidgets import (
     QWidget,
@@ -27,13 +39,16 @@ from PyQt5.QtWidgets import (
     QDoubleSpinBox,
     QSplitter,
     QRadioButton,
+    QLineEdit,
     QButtonGroup,
+    QGroupBox,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont, QTextCursor
 
 from ..models.config import Config, SubtitleStyleConfig
 from ..models.history import HistoryManager, HistoryRecord
+from .theme import Styles
 from ..core.api_client import JimengAPIClient
 from ..core.task_manager import TaskManager, TaskProgress
 from ..core.downloader import ImageDownloader
@@ -283,19 +298,24 @@ class TTSLiuliangAsyncWorker(QThread):
         self.task_manager.set_progress_callback(lambda p: self.progress_signal.emit(p))
 
     def run(self):
+        _logger.info("TTSLiuliangAsyncWorker.run 开始")
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
 
         try:
+            _logger.info("开始执行 run_with_files")
             result = self._loop.run_until_complete(
                 self.task_manager.run_with_files(self.file_paths, self.recycle_dir)
             )
+            _logger.info("run_with_files 完成")
             self.finished_signal.emit(result)
         except Exception as e:
+            _logger.error(f"TTSLiuliangAsyncWorker 异常: {e}", exc_info=True)
             self.log_signal.emit(f"Task exception: {str(e)}", "error")
             self.finished_signal.emit(None)
         finally:
             self._loop.close()
+            _logger.info("TTSLiuliangAsyncWorker.run 结束")
 
 
 class VideoComposeAsyncWorker(QThread):
@@ -529,10 +549,13 @@ class HomePage(QWidget):
         self.yindao_rewrite_copywriting_start_time: float = 0
 
         # Normal video state
-        self.normal_video_source_dir = os.path.join(project_dir, "input", "真实视频素材")
+        self.normal_video_source_dir = r"D:\BaiduNetdiskDownload\真实视频素材"
         self.normal_video_output_dir = os.path.join(project_dir, "output", "普通视频")
         self.liuliang_video_output_dir = os.path.join(project_dir, "output", "流量视频")
         self.yindao_video_output_dir = os.path.join(project_dir, "output", "引导视频")
+        self.chuchuang_output_dir = os.path.join(project_dir, "input", "视频配音", "橱窗语音")
+        self.chuchuang_video_output_dir = os.path.join(project_dir, "output", "橱窗视频")
+        self.chuchuang_material_dir = os.path.join(project_dir, "input", "橱窗素材")
         self.overlay_material_dir = os.path.join(project_dir, "input", "叠加素材")
         self.normal_video_task_manager: NormalVideoTaskManager = None
         self.normal_video_worker: NormalVideoAsyncWorker = None
@@ -581,6 +604,7 @@ class HomePage(QWidget):
         """)
 
         self.tab_widget.addTab(self._create_extract_copywriting_tab(), "扒文案")
+        self.tab_widget.addTab(self._create_new_extract_tab(), "提取文案(新)")
         self.tab_widget.addTab(self._create_copywriting_tab(), "视频文案")
         self.tab_widget.addTab(self._create_image_recognition_tab(), "图片识别")
         self.tab_widget.addTab(self._create_merge_copywriting_tab(), "合并文案")
@@ -897,6 +921,17 @@ class HomePage(QWidget):
 
         return frame
 
+    def _check_whisper_model(self, model_name: str) -> bool:
+        from src.utils.whisper_model_manager import WhisperModelManager
+        if WhisperModelManager.is_model_downloaded(model_name):
+            return True
+        QMessageBox.warning(
+            self, "模型未下载",
+            f"未找到 Whisper 模型「{model_name}」。\n\n"
+            f"请前往 设置 > Whisper下载 下载对应模型后再使用此功能。",
+        )
+        return False
+
     def _on_extract_copywriting_start(self):
         """Start extract copywriting task"""
         url_text = self.extract_copywriting_url_input.toPlainText().strip()
@@ -904,9 +939,12 @@ class HomePage(QWidget):
             QMessageBox.warning(self, "提示", "请输入视频链接")
             return
 
+        model = self.extract_copywriting_model_combo.currentText()
+        if not self._check_whisper_model(model):
+            return
+
         # Get settings
         concurrent = self.extract_copywriting_concurrent_spin.value()
-        model = self.extract_copywriting_model_combo.currentText()
         device = self.extract_copywriting_device_combo.currentText()
 
         # Create task manager
@@ -2952,6 +2990,9 @@ class HomePage(QWidget):
         state.normal_video_voice_volume = self.normal_video_voice_slider.value()
         state.normal_video_liuliang_checked = self.normal_video_liuliang_check.isChecked()
         state.normal_video_yindao_checked = self.normal_video_yindao_check.isChecked()
+        state.normal_video_chuchuang_checked = self.normal_video_chuchuang_check.isChecked()
+        state.normal_video_chuchuang_duration = self.normal_video_chuchuang_duration_spin.value()
+        state.normal_video_chuchuang_material_type = self.normal_video_chuchuang_material_combo.currentText()
 
     def _load_ui_state(self):
         """Load UI state from config"""
@@ -3051,6 +3092,9 @@ class HomePage(QWidget):
         self.normal_video_voice_slider.setValue(state.normal_video_voice_volume)
         self.normal_video_liuliang_check.setChecked(state.normal_video_liuliang_checked)
         self.normal_video_yindao_check.setChecked(state.normal_video_yindao_checked)
+        self.normal_video_chuchuang_check.setChecked(state.normal_video_chuchuang_checked)
+        self.normal_video_chuchuang_duration_spin.setValue(state.normal_video_chuchuang_duration)
+        self._set_combo_by_text(self.normal_video_chuchuang_material_combo, state.normal_video_chuchuang_material_type)
 
     def _restore_folder_selection(self, list_widget, saved_folders, base_dir):
         """Restore folder selection, validating existence"""
@@ -5805,6 +5849,13 @@ class HomePage(QWidget):
             QMessageBox.warning(self, "提示", "请先在设置页面配置语音生成 API Key")
             return
 
+        if (
+            self.tts_subtitle_local_radio.isChecked()
+            and self.tts_subtitle_checkbox.isChecked()
+        ):
+            if not self._check_whisper_model(self.tts_local_model_combo.currentText()):
+                return
+
         if self.tts_liuliang_radio.isChecked():
             self._on_tts_start_liuliang()
         elif self.tts_yindao_radio.isChecked():
@@ -6294,22 +6345,8 @@ class HomePage(QWidget):
         """)
 
         layout = QVBoxLayout(frame)
-        layout.setContentsMargins(15, 15, 15, 15)
-        layout.setSpacing(15)
-
-        # Title
-        title = QLabel("参数设置")
-        title.setFont(QFont("Microsoft YaHei", 10, QFont.Bold))
-        title.setStyleSheet("color: #333333; border: none;")
-        layout.addWidget(title)
-
-        # Parameter grid (4 columns)
-        grid = QGridLayout()
-        grid.setSpacing(8)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 1)
-        grid.setColumnStretch(2, 1)
-        grid.setColumnStretch(3, 1)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
 
         # Styles
         spin_style = """
@@ -6317,7 +6354,7 @@ class HomePage(QWidget):
                 border: 1px solid #d0d0d0;
                 padding: 1px 4px;
                 background: #ffffff;
-                min-width: 80px;
+                min-width: 65px;
                 min-height: 28px;
             }
         """
@@ -6331,33 +6368,80 @@ class HomePage(QWidget):
             }
         """
 
-        # Row 0: Generate count, Concurrent, Image duration, Loop order
-        grid.addWidget(self._create_spin_param("生成数量:", "video_compose_count_spin",
-                       1, 1000, 10, spin_style), 0, 0)
-        grid.addWidget(self._create_spin_param("并发数:", "video_compose_concurrent_spin",
-                       1, 5, 2, spin_style), 0, 1)
-        grid.addWidget(self._create_double_spin_range_param("片段时长:", "video_compose_clip_duration_min_spin",
-                       "video_compose_clip_duration_max_spin",
-                       1.0, 60.0, 5.0, 10.0, spin_style, "秒"), 0, 2)
+        # --- GroupBox: 基础参数 ---
+        basic_group = QGroupBox("基础参数")
+        basic_group.setStyleSheet(Styles.SETTINGS_GROUPBOX)
+        basic_grid = QGridLayout(basic_group)
+        basic_grid.setSpacing(8)
+        basic_grid.setColumnStretch(0, 1)
+        basic_grid.setColumnStretch(1, 1)
+        basic_grid.setColumnStretch(2, 1)
+        basic_grid.setColumnStretch(3, 1)
+        basic_grid.addWidget(self._create_spin_param("生成数量:", "video_compose_count_spin",
+                             1, 1000, 10, spin_style), 0, 0)
+        basic_grid.addWidget(self._create_spin_param("并发数:", "video_compose_concurrent_spin",
+                             1, 5, 2, spin_style), 0, 1)
+        basic_grid.addWidget(self._create_double_spin_range_param("片段时长:", "video_compose_clip_duration_min_spin",
+                             "video_compose_clip_duration_max_spin",
+                             1.0, 60.0, 5.0, 10.0, spin_style, "秒"), 0, 2)
+        basic_grid.addWidget(self._create_combo_param("分辨率:", "video_compose_resolution_combo",
+                             [("1080p竖屏", (1080, 1920)), ("1080p横屏", (1920, 1080)),
+                              ("720p竖屏", (720, 1280)), ("720p横屏", (1280, 720))], combo_style), 0, 3)
+        layout.addWidget(basic_group)
 
-        # Row 1: Resolution
-        grid.addWidget(self._create_combo_param("分辨率:", "video_compose_resolution_combo",
-                       [("1080p竖屏", (1080, 1920)), ("1080p横屏", (1920, 1080)),
-                        ("720p竖屏", (720, 1280)), ("720p横屏", (1280, 720))], combo_style), 1, 0)
-
-        # Row 2: Product video settings
-        grid.addWidget(self._create_spin_param("商品视频数量:", "video_compose_product_video_count_spin",
-                       0, 10, 2, spin_style), 2, 0)
-        grid.addWidget(self._create_spin_param("商品图片数量:", "video_compose_product_image_count_spin",
-                       0, 10, 2, spin_style), 2, 1)
-        grid.addWidget(self._create_double_spin_range_param("商品图片时长:", "video_compose_product_image_duration_min_spin",
-                       "video_compose_product_image_duration_max_spin",
-                       1.0, 30.0, 2.0, 5.0, spin_style, "秒"), 2, 2)
+        # --- GroupBox: 商品素材 ---
+        product_group = QGroupBox("商品素材")
+        product_group.setStyleSheet(Styles.SETTINGS_GROUPBOX)
+        product_grid = QGridLayout(product_group)
+        product_grid.setSpacing(8)
+        product_grid.setColumnStretch(0, 1)
+        product_grid.setColumnStretch(1, 1)
+        product_grid.setColumnStretch(2, 1)
+        product_grid.setColumnStretch(3, 1)
+        product_grid.addWidget(self._create_spin_param("商品视频数量:", "video_compose_product_video_count_spin",
+                               0, 10, 2, spin_style), 0, 0)
+        product_grid.addWidget(self._create_spin_param("商品图片数量:", "video_compose_product_image_count_spin",
+                               0, 10, 2, spin_style), 0, 1)
+        product_grid.addWidget(self._create_double_spin_range_param("商品图片时长:", "video_compose_product_image_duration_min_spin",
+                               "video_compose_product_image_duration_max_spin",
+                               1.0, 30.0, 2.0, 5.0, spin_style, "秒"), 0, 2)
 
         self.video_compose_priority_video_checkbox = QCheckBox("优先视频")
         self.video_compose_priority_video_checkbox.setFont(QFont("Microsoft YaHei", 9))
         self.video_compose_priority_video_checkbox.setChecked(True)
+        product_grid.addWidget(self.video_compose_priority_video_checkbox, 0, 3)
+        layout.addWidget(product_group)
 
+        # --- GroupBox: 音频设置 ---
+        audio_group = QGroupBox("音频设置")
+        audio_group.setStyleSheet(Styles.SETTINGS_GROUPBOX)
+        audio_grid = QGridLayout(audio_group)
+        audio_grid.setSpacing(8)
+        audio_grid.setColumnStretch(0, 1)
+        audio_grid.setColumnStretch(1, 1)
+        audio_grid.setColumnStretch(2, 1)
+        audio_grid.setColumnStretch(3, 1)
+        audio_grid.addWidget(self._create_slider_param("背景音量:", "video_compose_bgm_slider",
+                             0, 100, 20), 0, 0)
+        audio_grid.addWidget(self._create_slider_param("配音音量:", "video_compose_voice_slider",
+                             0, 500, 100), 0, 1)
+        layout.addWidget(audio_group)
+
+        # --- GroupBox: 效果设置 ---
+        effect_group = QGroupBox("效果设置")
+        effect_group.setStyleSheet(Styles.SETTINGS_GROUPBOX)
+        effect_grid = QGridLayout(effect_group)
+        effect_grid.setSpacing(8)
+        effect_grid.setColumnStretch(0, 1)
+        effect_grid.setColumnStretch(1, 1)
+        effect_grid.setColumnStretch(2, 1)
+        effect_grid.setColumnStretch(3, 1)
+        # Row 0: 字幕设置, 模糊边框, 叠加素材, 画中画
+        effect_grid.addWidget(self._create_subtitle_param(), 0, 0)
+        effect_grid.addWidget(self._create_compose_blurred_border_param(), 0, 1)
+        effect_grid.addWidget(self._create_compose_overlay_material_param(), 0, 2)
+        effect_grid.addWidget(self._create_compose_pip_param(), 0, 3)
+        # Row 1: 叠加模式, 叠加效果, 效果强度
         self.video_compose_overlay_mode_checkbox = QCheckBox("叠加模式")
         self.video_compose_overlay_mode_checkbox.setFont(QFont("Microsoft YaHei", 9))
         self.video_compose_overlay_mode_checkbox.setChecked(True)
@@ -6365,67 +6449,23 @@ class HomePage(QWidget):
         self.video_compose_overlay_mode_checkbox.stateChanged.connect(
             self._on_overlay_mode_changed
         )
-
-        checkbox_container = QWidget()
-        checkbox_layout = QHBoxLayout(checkbox_container)
-        checkbox_layout.setContentsMargins(0, 0, 0, 0)
-        checkbox_layout.setSpacing(6)
-        checkbox_layout.addWidget(self.video_compose_priority_video_checkbox)
-        checkbox_layout.addWidget(self.video_compose_overlay_mode_checkbox)
-        grid.addWidget(checkbox_container, 2, 3)
-
-        # Row 3: BGM volume, Voice volume, Subtitle, Effect type, Effect strength
-        grid.addWidget(self._create_slider_param("背景音量:", "video_compose_bgm_slider",
-                       0, 100, 20), 3, 0)
-        grid.addWidget(self._create_slider_param("配音音量:", "video_compose_voice_slider",
-                       0, 500, 100), 3, 1)
-        grid.addWidget(self._create_subtitle_param(), 3, 2)
-
-        # 叠加效果 + 效果强度合并容器
-        effect_and_slider_container = QWidget()
-        eas_layout = QVBoxLayout(effect_and_slider_container)
-        eas_layout.setContentsMargins(0, 0, 0, 0)
-        eas_layout.setSpacing(4)
-
-        # 效果类型行
-        effect_row = QWidget()
-        effect_row_layout = QHBoxLayout(effect_row)
-        effect_row_layout.setContentsMargins(0, 0, 0, 0)
-        effect_row_layout.setSpacing(3)
-        effect_label = QLabel("叠加效果:")
-        effect_label.setFont(QFont("Microsoft YaHei", 9))
-        self.video_compose_effect_combo = QComboBox()
-        self.video_compose_effect_combo.setFont(QFont("Microsoft YaHei", 9))
-        self.video_compose_effect_combo.addItem("无效果", "none")
-        self.video_compose_effect_combo.addItem("背景模糊", "blur")
-        self.video_compose_effect_combo.addItem("黑色蒙版", "mask")
+        effect_grid.addWidget(self.video_compose_overlay_mode_checkbox, 1, 0)
+        effect_type_widget = self._create_combo_param("叠加效果:", "video_compose_effect_combo",
+                             [("无效果", "none"), ("背景模糊", "blur"), ("黑色蒙版", "mask")], combo_style)
         self.video_compose_effect_combo.setToolTip("叠加模式下商品视频显示时的背景效果")
         self.video_compose_effect_combo.currentIndexChanged.connect(self._on_effect_type_changed)
-        effect_row_layout.addWidget(effect_label)
-        effect_row_layout.addWidget(self.video_compose_effect_combo)
-        effect_row_layout.addStretch()
-        eas_layout.addWidget(effect_row)
-
-        # 效果强度滑块行
+        effect_grid.addWidget(effect_type_widget, 1, 1)
         slider_widget = self._create_slider_param("效果强度:", "video_compose_effect_slider", 0, 100, 20)
         self.video_compose_effect_slider.setToolTip("背景模糊强度或蒙版透明度")
         self.video_compose_effect_slider.setEnabled(False)
-        eas_layout.addWidget(slider_widget)
+        effect_grid.addWidget(slider_widget, 1, 2)
+        layout.addWidget(effect_group)
 
-        grid.addWidget(effect_and_slider_container, 3, 3)
-
-        # Row 4: Blurred border, Overlay material, PiP
-        grid.addWidget(self._create_compose_blurred_border_param(), 4, 0)
-        grid.addWidget(self._create_compose_overlay_material_param(), 4, 1)
-        grid.addWidget(self._create_compose_pip_param(), 4, 2)
-
-        layout.addLayout(grid)
         layout.addStretch()
 
         # Bottom buttons
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(6)
-        btn_layout.addStretch()
 
         btn_style = """
             QPushButton {
@@ -6489,11 +6529,30 @@ class HomePage(QWidget):
         self.video_compose_stop_btn.setEnabled(False)
         self.video_compose_stop_btn.clicked.connect(self._on_video_compose_stop)
 
+        # 打开输出文件夹按钮
+        open_folder_btn_style = """
+            QPushButton {
+                background-color: #17a2b8;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 12px;
+                min-height: 28px;
+            }
+            QPushButton:hover { background-color: #138496; }
+        """
+        self.video_compose_open_folder_btn = QPushButton("打开输出文件夹")
+        self.video_compose_open_folder_btn.setFont(QFont("Microsoft YaHei", 9))
+        self.video_compose_open_folder_btn.setStyleSheet(open_folder_btn_style)
+        self.video_compose_open_folder_btn.clicked.connect(self._on_video_compose_open_folder)
+
         btn_layout.addWidget(self.video_compose_refresh_btn)
+        btn_layout.addStretch()
         btn_layout.addWidget(self.video_compose_start_btn)
         btn_layout.addWidget(self.video_compose_pause_btn)
         btn_layout.addWidget(self.video_compose_resume_btn)
         btn_layout.addWidget(self.video_compose_stop_btn)
+        btn_layout.addWidget(self.video_compose_open_folder_btn)
 
         layout.addLayout(btn_layout)
 
@@ -7192,17 +7251,34 @@ class HomePage(QWidget):
             duration = time.time() - self.video_compose_start_time
             minutes = int(duration // 60)
             seconds = int(duration % 60)
+            success_count = progress.completed_tasks - progress.failed_tasks
             self._video_compose_log(
-                f"任务完成! 成功: {progress.completed_tasks - progress.failed_tasks}, "
+                f"任务完成! 成功: {success_count}, "
                 f"失败: {progress.failed_tasks}, "
                 f"耗时: {minutes:02d}:{seconds:02d}",
                 "success"
             )
+
+            # 弹窗提醒
+            from PyQt5.QtWidgets import QMessageBox
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("视频合成完成")
+            msg_box.setIcon(QMessageBox.Information)
+            msg_box.setText(f"视频合成任务已完成！\n\n成功: {success_count} 个\n失败: {progress.failed_tasks} 个\n耗时: {minutes:02d}:{seconds:02d}")
+            msg_box.setStandardButtons(QMessageBox.Ok)
+            msg_box.exec_()
         else:
             self._video_compose_log("任务异常结束", "error")
 
         self.video_compose_task_manager = None
         self.video_compose_worker = None
+
+    def _on_video_compose_open_folder(self):
+        """打开视频合成输出文件夹"""
+        if os.path.exists(self.video_compose_output_dir):
+            subprocess.Popen(['explorer', self.video_compose_output_dir])
+        else:
+            QMessageBox.warning(self, "提示", f"输出文件夹不存在: {self.video_compose_output_dir}")
 
     # ==================== Normal Video Tab ====================
 
@@ -7242,48 +7318,16 @@ class HomePage(QWidget):
         """)
 
         layout = QVBoxLayout(frame)
-        layout.setContentsMargins(15, 15, 15, 15)
-        layout.setSpacing(15)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
 
-        title = QLabel("参数设置")
-        title.setFont(QFont("Microsoft YaHei", 10, QFont.Bold))
-        title.setStyleSheet("color: #333333; border: none;")
-        layout.addWidget(title)
-
-        # 生成类型选择（紧接标题下方）
-        type_row = QHBoxLayout()
-        type_label = QLabel("生成类型:")
-        type_label.setFont(QFont("Microsoft YaHei", 9))
-        type_label.setStyleSheet("color: #333333; border: none;")
-
-        self.normal_video_liuliang_check = QCheckBox("流量视频")
-        self.normal_video_liuliang_check.setFont(QFont("Microsoft YaHei", 9))
-        self.normal_video_liuliang_check.setChecked(True)
-
-        self.normal_video_yindao_check = QCheckBox("引导视频")
-        self.normal_video_yindao_check.setFont(QFont("Microsoft YaHei", 9))
-        self.normal_video_yindao_check.setChecked(False)
-
-        type_row.addWidget(type_label)
-        type_row.addWidget(self.normal_video_liuliang_check)
-        type_row.addSpacing(16)
-        type_row.addWidget(self.normal_video_yindao_check)
-        type_row.addStretch()
-        layout.addLayout(type_row)
-
-        grid = QGridLayout()
-        grid.setSpacing(8)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 1)
-        grid.setColumnStretch(2, 1)
-        grid.setColumnStretch(3, 1)
-
+        # Styles
         spin_style = """
             QSpinBox, QDoubleSpinBox {
                 border: 1px solid #d0d0d0;
                 padding: 1px 4px;
                 background: #ffffff;
-                min-width: 80px;
+                min-width: 65px;
                 min-height: 28px;
             }
         """
@@ -7297,32 +7341,145 @@ class HomePage(QWidget):
             }
         """
 
-        # Row 0: count, concurrent, clip duration, resolution
-        grid.addWidget(self._create_spin_param("生成数量:", "normal_video_count_spin",
-                       1, 1000, 10, spin_style), 0, 0)
-        grid.addWidget(self._create_spin_param("并发数:", "normal_video_concurrent_spin",
-                       1, 5, 2, spin_style), 0, 1)
-        grid.addWidget(self._create_double_spin_range_param("片段时长:", "normal_video_clip_duration_min_spin",
-                       "normal_video_clip_duration_max_spin",
-                       1.0, 60.0, 5.0, 10.0, spin_style, "秒"), 0, 2)
-        grid.addWidget(self._create_combo_param("分辨率:", "normal_video_resolution_combo",
-                       [("1080p竖屏", (1080, 1920)), ("1080p横屏", (1920, 1080)),
-                        ("720p竖屏", (720, 1280)), ("720p横屏", (1280, 720))], combo_style), 0, 3)
+        # --- GroupBox: 生成类型 ---
+        type_group = QGroupBox("生成类型")
+        type_group.setStyleSheet(Styles.SETTINGS_GROUPBOX)
+        type_layout = QHBoxLayout(type_group)
 
-        # Row 1: BGM volume, Voice volume, subtitle button, title button
-        grid.addWidget(self._create_slider_param("背景音量:", "normal_video_bgm_slider",
-                       0, 100, 20), 1, 0)
-        grid.addWidget(self._create_slider_param("配音音量:", "normal_video_voice_slider",
-                       0, 500, 100), 1, 1)
-        grid.addWidget(self._create_normal_video_subtitle_param(), 1, 2)
-        grid.addWidget(self._create_normal_video_title_param(), 1, 3)
+        self.normal_video_liuliang_check = QCheckBox("流量视频")
+        self.normal_video_liuliang_check.setFont(QFont("Microsoft YaHei", 9))
+        self.normal_video_liuliang_check.setChecked(True)
+        self.normal_video_liuliang_check.stateChanged.connect(self._on_normal_video_type_changed)
 
-        # Row 2: Blurred border, Overlay material, PiP
-        grid.addWidget(self._create_normal_video_blurred_border_param(), 2, 0)
-        grid.addWidget(self._create_normal_video_overlay_material_param(), 2, 1)
-        grid.addWidget(self._create_normal_video_pip_param(), 2, 2)
+        self.normal_video_yindao_check = QCheckBox("引导视频")
+        self.normal_video_yindao_check.setFont(QFont("Microsoft YaHei", 9))
+        self.normal_video_yindao_check.setChecked(False)
+        self.normal_video_yindao_check.stateChanged.connect(self._on_normal_video_type_changed)
 
-        layout.addLayout(grid)
+        self.normal_video_chuchuang_check = QCheckBox("橱窗视频")
+        self.normal_video_chuchuang_check.setFont(QFont("Microsoft YaHei", 9))
+        self.normal_video_chuchuang_check.setChecked(False)
+        self.normal_video_chuchuang_check.stateChanged.connect(self._on_normal_video_type_changed)
+
+        type_layout.addWidget(self.normal_video_liuliang_check)
+        type_layout.addSpacing(16)
+        type_layout.addWidget(self.normal_video_yindao_check)
+        type_layout.addSpacing(16)
+        type_layout.addWidget(self.normal_video_chuchuang_check)
+
+        # 橱窗素材显示时长
+        type_layout.addSpacing(24)
+        chuchuang_duration_label = QLabel("橱窗素材时长:")
+        chuchuang_duration_label.setFont(QFont("Microsoft YaHei", 9))
+        type_layout.addWidget(chuchuang_duration_label)
+
+        self.normal_video_chuchuang_duration_spin = QSpinBox()
+        self.normal_video_chuchuang_duration_spin.setRange(1, 300)
+        self.normal_video_chuchuang_duration_spin.setValue(60)
+        self.normal_video_chuchuang_duration_spin.setSuffix(" 秒")
+        self.normal_video_chuchuang_duration_spin.setStyleSheet(spin_style)
+        self.normal_video_chuchuang_duration_spin.setEnabled(False)
+        type_layout.addWidget(self.normal_video_chuchuang_duration_spin)
+
+        # 橱窗素材类型
+        type_layout.addSpacing(16)
+        chuchuang_type_label = QLabel("素材类型:")
+        chuchuang_type_label.setFont(QFont("Microsoft YaHei", 9))
+        type_layout.addWidget(chuchuang_type_label)
+
+        self.normal_video_chuchuang_material_combo = QComboBox()
+        self.normal_video_chuchuang_material_combo.addItems(["图片", "视频"])
+        self.normal_video_chuchuang_material_combo.setCurrentText("图片")
+        self.normal_video_chuchuang_material_combo.setStyleSheet("""
+            QComboBox {
+                border: 1px solid #d0d0d0;
+                padding: 1px 4px;
+                background: #ffffff;
+                min-width: 80px;
+                min-height: 28px;
+            }
+        """)
+        self.normal_video_chuchuang_material_combo.setEnabled(False)
+        type_layout.addWidget(self.normal_video_chuchuang_material_combo)
+
+        # 橱窗关键词
+        type_layout.addSpacing(16)
+        chuchuang_keyword_label = QLabel("检测关键词:")
+        chuchuang_keyword_label.setFont(QFont("Microsoft YaHei", 9))
+        type_layout.addWidget(chuchuang_keyword_label)
+
+        self.normal_video_chuchuang_keyword_combo = QComboBox()
+        self.normal_video_chuchuang_keyword_combo.setEditable(True)  # 可编辑
+        self.normal_video_chuchuang_keyword_combo.addItems(["橱窗", "置顶"])
+        self.normal_video_chuchuang_keyword_combo.setCurrentText("橱窗")
+        self.normal_video_chuchuang_keyword_combo.setStyleSheet("""
+            QComboBox {
+                border: 1px solid #d0d0d0;
+                padding: 1px 4px;
+                background: #ffffff;
+                min-width: 100px;
+                min-height: 28px;
+            }
+        """)
+        self.normal_video_chuchuang_keyword_combo.setEnabled(False)
+        type_layout.addWidget(self.normal_video_chuchuang_keyword_combo)
+
+        type_layout.addStretch()
+        layout.addWidget(type_group)
+
+        # --- GroupBox: 基础参数 ---
+        basic_group = QGroupBox("基础参数")
+        basic_group.setStyleSheet(Styles.SETTINGS_GROUPBOX)
+        basic_grid = QGridLayout(basic_group)
+        basic_grid.setSpacing(8)
+        basic_grid.setColumnStretch(0, 1)
+        basic_grid.setColumnStretch(1, 1)
+        basic_grid.setColumnStretch(2, 1)
+        basic_grid.setColumnStretch(3, 1)
+        basic_grid.addWidget(self._create_spin_param("生成数量:", "normal_video_count_spin",
+                             1, 1000, 10, spin_style), 0, 0)
+        basic_grid.addWidget(self._create_spin_param("并发数:", "normal_video_concurrent_spin",
+                             1, 5, 2, spin_style), 0, 1)
+        basic_grid.addWidget(self._create_double_spin_range_param("片段时长:", "normal_video_clip_duration_min_spin",
+                             "normal_video_clip_duration_max_spin",
+                             1.0, 60.0, 5.0, 10.0, spin_style, "秒"), 0, 2)
+        basic_grid.addWidget(self._create_combo_param("分辨率:", "normal_video_resolution_combo",
+                             [("16:9", (1920, 1080)), ("1:1", (1080, 1080))], combo_style), 0, 3)
+        layout.addWidget(basic_group)
+
+        # --- GroupBox: 音频设置 ---
+        audio_group = QGroupBox("音频设置")
+        audio_group.setStyleSheet(Styles.SETTINGS_GROUPBOX)
+        audio_grid = QGridLayout(audio_group)
+        audio_grid.setSpacing(8)
+        audio_grid.setColumnStretch(0, 1)
+        audio_grid.setColumnStretch(1, 1)
+        audio_grid.setColumnStretch(2, 1)
+        audio_grid.setColumnStretch(3, 1)
+        audio_grid.addWidget(self._create_slider_param("背景音量:", "normal_video_bgm_slider",
+                             0, 100, 20), 0, 0)
+        audio_grid.addWidget(self._create_slider_param("配音音量:", "normal_video_voice_slider",
+                             0, 500, 100), 0, 1)
+        layout.addWidget(audio_group)
+
+        # --- GroupBox: 效果设置 ---
+        effect_group = QGroupBox("效果设置")
+        effect_group.setStyleSheet(Styles.SETTINGS_GROUPBOX)
+        effect_grid = QGridLayout(effect_group)
+        effect_grid.setSpacing(8)
+        effect_grid.setColumnStretch(0, 1)
+        effect_grid.setColumnStretch(1, 1)
+        effect_grid.setColumnStretch(2, 1)
+        effect_grid.setColumnStretch(3, 1)
+        # Row 0: 字幕设置, 标题设置, 模糊边框, 叠加素材
+        effect_grid.addWidget(self._create_normal_video_subtitle_param(), 0, 0)
+        effect_grid.addWidget(self._create_normal_video_title_param(), 0, 1)
+        effect_grid.addWidget(self._create_normal_video_blurred_border_param(), 0, 2)
+        effect_grid.addWidget(self._create_normal_video_overlay_material_param(), 0, 3)
+        # Row 1: 画中画
+        effect_grid.addWidget(self._create_normal_video_pip_param(), 1, 0)
+        layout.addWidget(effect_group)
+
         layout.addStretch()
 
         # Buttons
@@ -7387,10 +7544,28 @@ class HomePage(QWidget):
         self.normal_video_stop_btn.setEnabled(False)
         self.normal_video_stop_btn.clicked.connect(self._on_normal_video_stop)
 
+        # 打开输出文件夹按钮
+        open_folder_btn_style = """
+            QPushButton {
+                background-color: #17a2b8;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 12px;
+                min-height: 28px;
+            }
+            QPushButton:hover { background-color: #138496; }
+        """
+        self.normal_video_open_folder_btn = QPushButton("打开输出文件夹")
+        self.normal_video_open_folder_btn.setFont(QFont("Microsoft YaHei", 9))
+        self.normal_video_open_folder_btn.setStyleSheet(open_folder_btn_style)
+        self.normal_video_open_folder_btn.clicked.connect(self._on_normal_video_open_folder)
+
         btn_layout.addWidget(self.normal_video_start_btn)
         btn_layout.addWidget(self.normal_video_pause_btn)
         btn_layout.addWidget(self.normal_video_resume_btn)
         btn_layout.addWidget(self.normal_video_stop_btn)
+        btn_layout.addWidget(self.normal_video_open_folder_btn)
 
         layout.addLayout(btn_layout)
 
@@ -7765,12 +7940,49 @@ class HomePage(QWidget):
             self.config.pip = dialog.get_config()
             self.config.save()
 
+    def _on_normal_video_type_changed(self, state):
+        """流量视频、引导视频、橱窗视频互斥选择"""
+        sender = self.sender()
+        if state == Qt.Checked:
+            # 勾选一个时，取消另外两个
+            if sender == self.normal_video_liuliang_check:
+                self.normal_video_yindao_check.blockSignals(True)
+                self.normal_video_yindao_check.setChecked(False)
+                self.normal_video_yindao_check.blockSignals(False)
+                self.normal_video_chuchuang_check.blockSignals(True)
+                self.normal_video_chuchuang_check.setChecked(False)
+                self.normal_video_chuchuang_check.blockSignals(False)
+                self.normal_video_chuchuang_duration_spin.setEnabled(False)
+                self.normal_video_chuchuang_material_combo.setEnabled(False)
+                self.normal_video_chuchuang_keyword_combo.setEnabled(False)
+            elif sender == self.normal_video_yindao_check:
+                self.normal_video_liuliang_check.blockSignals(True)
+                self.normal_video_liuliang_check.setChecked(False)
+                self.normal_video_liuliang_check.blockSignals(False)
+                self.normal_video_chuchuang_check.blockSignals(True)
+                self.normal_video_chuchuang_check.setChecked(False)
+                self.normal_video_chuchuang_check.blockSignals(False)
+                self.normal_video_chuchuang_duration_spin.setEnabled(False)
+                self.normal_video_chuchuang_material_combo.setEnabled(False)
+                self.normal_video_chuchuang_keyword_combo.setEnabled(False)
+            elif sender == self.normal_video_chuchuang_check:
+                self.normal_video_liuliang_check.blockSignals(True)
+                self.normal_video_liuliang_check.setChecked(False)
+                self.normal_video_liuliang_check.blockSignals(False)
+                self.normal_video_yindao_check.blockSignals(True)
+                self.normal_video_yindao_check.setChecked(False)
+                self.normal_video_yindao_check.blockSignals(False)
+                self.normal_video_chuchuang_duration_spin.setEnabled(True)
+                self.normal_video_chuchuang_material_combo.setEnabled(True)
+                self.normal_video_chuchuang_keyword_combo.setEnabled(True)
+
     def _on_normal_video_start(self):
         do_liuliang = self.normal_video_liuliang_check.isChecked()
         do_yindao = self.normal_video_yindao_check.isChecked()
+        do_chuchuang = self.normal_video_chuchuang_check.isChecked()
 
-        if not do_liuliang and not do_yindao:
-            QMessageBox.warning(self, "提示", "请至少勾选【流量视频】或【引导视频】中的一个")
+        if not do_liuliang and not do_yindao and not do_chuchuang:
+            QMessageBox.warning(self, "提示", "请至少勾选【流量视频】、【引导视频】或【橱窗视频】中的一个")
             return
 
         # Validate source videos
@@ -7784,7 +7996,7 @@ class HomePage(QWidget):
             QMessageBox.warning(self, "提示", "input/真实视频素材/ 文件夹中没有视频文件")
             return
 
-        # Build pending configs (顺序：流量 → 引导)
+        # Build pending configs (顺序：流量 → 引导 → 橱窗)
         configs = []
         if do_liuliang:
             audio_files = [
@@ -7794,7 +8006,7 @@ class HomePage(QWidget):
             if not audio_files:
                 QMessageBox.warning(self, "提示", "input/视频配音/流量语音/ 文件夹中没有音频文件")
                 return
-            configs.append((self.liuliang_output_dir, self.liuliang_video_output_dir, "流量语音", "流量视频"))
+            configs.append((self.liuliang_output_dir, self.liuliang_video_output_dir, "流量语音", "流量视频", False, 0, "图片", ""))
 
         if do_yindao:
             audio_files = [
@@ -7804,7 +8016,43 @@ class HomePage(QWidget):
             if not audio_files:
                 QMessageBox.warning(self, "提示", "input/视频配音/引导语音/ 文件夹中没有音频文件")
                 return
-            configs.append((self.yindao_output_dir, self.yindao_video_output_dir, "引导语音", "引导视频"))
+            configs.append((self.yindao_output_dir, self.yindao_video_output_dir, "引导语音", "引导视频", False, 0, "图片", ""))
+
+        if do_chuchuang:
+            audio_files = [
+                f for f in os.listdir(self.chuchuang_output_dir)
+                if os.path.splitext(f)[1].lower() in {'.mp3', '.wav', '.aac', '.m4a', '.flac'}
+            ] if os.path.exists(self.chuchuang_output_dir) else []
+            if not audio_files:
+                QMessageBox.warning(self, "提示", "input/视频配音/橱窗语音/ 文件夹中没有音频文件")
+                return
+            # 检查橱窗素材
+            material_type = self.normal_video_chuchuang_material_combo.currentText()
+            chuchuang_keyword = self.normal_video_chuchuang_keyword_combo.currentText().strip()
+            if not chuchuang_keyword:
+                QMessageBox.warning(self, "提示", "请输入检测关键词")
+                return
+
+            chuchuang_materials = []
+            # 素材路径：input/橱窗素材/{关键词}/{图片或视频}/
+            keyword_dir = os.path.join(self.chuchuang_material_dir, chuchuang_keyword)
+            material_dir = os.path.join(keyword_dir, material_type)
+            if os.path.exists(material_dir):
+                if material_type == "图片":
+                    chuchuang_materials = [
+                        os.path.join(material_dir, f) for f in os.listdir(material_dir)
+                        if os.path.splitext(f)[1].lower() in {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}
+                    ]
+                else:
+                    chuchuang_materials = [
+                        os.path.join(material_dir, f) for f in os.listdir(material_dir)
+                        if os.path.splitext(f)[1].lower() in {'.mp4', '.avi', '.mov', '.mkv'}
+                    ]
+            if not chuchuang_materials:
+                QMessageBox.warning(self, "提示", f"input/橱窗素材/{chuchuang_keyword}/{material_type}/ 文件夹中没有素材文件")
+                return
+            chuchuang_duration = self.normal_video_chuchuang_duration_spin.value()
+            configs.append((self.chuchuang_output_dir, self.chuchuang_video_output_dir, "橱窗语音", "橱窗视频", True, chuchuang_duration, material_type, chuchuang_keyword))
 
         self._normal_video_pending_configs = configs
         self._normal_video_max_count = self.normal_video_count_spin.value()
@@ -7821,7 +8069,7 @@ class HomePage(QWidget):
             self._set_normal_video_buttons_state("idle")
             return
 
-        audio_dir, output_dir, recycle_subdir, label = self._normal_video_pending_configs.pop(0)
+        audio_dir, output_dir, recycle_subdir, label, is_chuchuang, chuchuang_duration, chuchuang_material_type, chuchuang_keyword = self._normal_video_pending_configs.pop(0) if len(self._normal_video_pending_configs[0]) == 8 else (*self._normal_video_pending_configs.pop(0), "")
         os.makedirs(output_dir, exist_ok=True)
 
         max_concurrent = self.normal_video_concurrent_spin.value()
@@ -7833,12 +8081,21 @@ class HomePage(QWidget):
 
         subtitle_status = "启用" if self.config.subtitle_style.enabled else "禁用"
         title_status = "启用" if self.config.title_style.enabled else "禁用"
-        self._normal_video_log(
-            f"开始生成【{label}】: 最大生成数: {self._normal_video_max_count}, 并发数: {max_concurrent}, "
-            f"片段时长: {clip_duration_min}s~{clip_duration_max}s, 分辨率: {resolution[0]}x{resolution[1]}, "
-            f"字幕: {subtitle_status}, 标题: {title_status}",
-            "info"
-        )
+
+        if is_chuchuang:
+            self._normal_video_log(
+                f"开始生成【{label}】: 最大生成数: {self._normal_video_max_count}, 并发数: {max_concurrent}, "
+                f"片段时长: {clip_duration_min}s~{clip_duration_max}s, 分辨率: {resolution[0]}x{resolution[1]}, "
+                f"字幕: {subtitle_status}, 标题: {title_status}, 橱窗素材时长: {chuchuang_duration}秒, 素材类型: {chuchuang_material_type}",
+                "info"
+            )
+        else:
+            self._normal_video_log(
+                f"开始生成【{label}】: 最大生成数: {self._normal_video_max_count}, 并发数: {max_concurrent}, "
+                f"片段时长: {clip_duration_min}s~{clip_duration_max}s, 分辨率: {resolution[0]}x{resolution[1]}, "
+                f"字幕: {subtitle_status}, 标题: {title_status}",
+                "info"
+            )
 
         self.normal_video_task_manager = NormalVideoTaskManager(
             video_source_dir=self.normal_video_source_dir,
@@ -7860,6 +8117,11 @@ class HomePage(QWidget):
             overlay_material_config=self.config.overlay_material,
             overlay_material_dir=self.overlay_material_dir,
             pip_config=self.config.pip,
+            chuchuang_mode=is_chuchuang,
+            chuchuang_material_dir=self.chuchuang_material_dir if is_chuchuang else "",
+            chuchuang_duration=chuchuang_duration if is_chuchuang else 60,
+            chuchuang_material_type=chuchuang_material_type if is_chuchuang else "图片",
+            chuchuang_keyword=chuchuang_keyword if is_chuchuang else "",
         )
         self.normal_video_start_time = time.time()
 
@@ -7895,12 +8157,22 @@ class HomePage(QWidget):
             duration = time.time() - self.normal_video_start_time
             minutes = int(duration // 60)
             seconds = int(duration % 60)
+            success_count = progress.completed_tasks - progress.failed_tasks
             self._normal_video_log(
-                f"任务完成! 成功: {progress.completed_tasks - progress.failed_tasks}, "
+                f"任务完成! 成功: {success_count}, "
                 f"失败: {progress.failed_tasks}, "
                 f"耗时: {minutes:02d}:{seconds:02d}",
                 "success"
             )
+
+            # 弹窗提醒
+            from PyQt5.QtWidgets import QMessageBox
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("视频生成完成")
+            msg_box.setIcon(QMessageBox.Information)
+            msg_box.setText(f"视频生成任务已完成！\n\n成功: {success_count} 个\n失败: {progress.failed_tasks} 个\n耗时: {minutes:02d}:{seconds:02d}")
+            msg_box.setStandardButtons(QMessageBox.Ok)
+            msg_box.exec_()
         else:
             self._normal_video_log("任务异常结束", "error")
 
@@ -7910,3 +8182,297 @@ class HomePage(QWidget):
 
         self.normal_video_task_manager = None
         self.normal_video_worker = None
+
+    def _on_normal_video_open_folder(self):
+        """打开普通视频输出文件夹"""
+        # 打开output目录，因为普通视频可能输出到流量视频或引导视频子目录
+        output_base = os.path.dirname(self.normal_video_output_dir)
+        if os.path.exists(output_base):
+            subprocess.Popen(['explorer', output_base])
+        else:
+            QMessageBox.warning(self, "提示", f"输出文件夹不存在: {output_base}")
+
+    # ==================== 新提取文案Tab ====================
+
+    def _create_new_extract_tab(self) -> QWidget:
+        """Create new extract copywriting tab"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 4, 0, 0)
+        layout.setSpacing(6)
+
+        # Top area - compact layout
+        top_frame = QFrame()
+        top_layout = QVBoxLayout(top_frame)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(6)
+
+        # File input and settings in one row
+        controls_layout = QHBoxLayout()
+        controls_layout.setSpacing(6)
+
+        # File input
+        input_panel = self._create_new_extract_input_panel()
+        controls_layout.addWidget(input_panel, 3)
+
+        # Settings
+        settings_panel = self._create_new_extract_settings_panel()
+        controls_layout.addWidget(settings_panel, 2)
+
+        top_layout.addLayout(controls_layout)
+        layout.addWidget(top_frame)
+
+        # Log area
+        log_frame = self._create_new_extract_log_area()
+        layout.addWidget(log_frame, 1)
+
+        return widget
+
+    def _create_new_extract_input_panel(self) -> QFrame:
+        """Create URL input panel"""
+        frame = QFrame()
+        frame.setStyleSheet("""
+            QFrame {
+                background-color: #ffffff;
+                border: 1px solid #d0d0d0;
+            }
+        """)
+
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(5)
+
+        label = QLabel("文件")
+        label.setFont(QFont("Microsoft YaHei", 9, QFont.Bold))
+        label.setStyleSheet("color: #333333; border: none;")
+        layout.addWidget(label)
+
+        # File selection
+        file_layout = QHBoxLayout()
+        self.new_extract_file_input = QLineEdit()
+        self.new_extract_file_input.setPlaceholderText("选择txt或excel文件...")
+        self.new_extract_file_input.setFont(QFont("Microsoft YaHei", 9))
+        self.new_extract_file_input.setReadOnly(True)
+        file_layout.addWidget(self.new_extract_file_input)
+
+        select_file_btn = QPushButton("选择文件")
+        select_file_btn.setFont(QFont("Microsoft YaHei", 9))
+        select_file_btn.setFixedWidth(80)
+        select_file_btn.clicked.connect(self._on_new_extract_select_file)
+        file_layout.addWidget(select_file_btn)
+        layout.addLayout(file_layout)
+
+        return frame
+
+    def _create_new_extract_settings_panel(self) -> QFrame:
+        """Create settings panel"""
+        frame = QFrame()
+        frame.setStyleSheet("""
+            QFrame {
+                background-color: #ffffff;
+                border: 1px solid #d0d0d0;
+            }
+        """)
+
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(8)
+
+        label = QLabel("参数设置")
+        label.setFont(QFont("Microsoft YaHei", 10, QFont.Bold))
+        label.setStyleSheet("color: #333333; border: none;")
+        layout.addWidget(label)
+
+        # Model selection
+        model_layout = QHBoxLayout()
+        model_label = QLabel("Whisper模型:")
+        model_label.setFont(QFont("Microsoft YaHei", 9))
+        self.new_extract_model_combo = QComboBox()
+        self.new_extract_model_combo.addItems(["small", "medium"])
+        self.new_extract_model_combo.setCurrentText("medium")
+        model_layout.addWidget(model_label)
+        model_layout.addWidget(self.new_extract_model_combo)
+        model_layout.addStretch()
+        layout.addLayout(model_layout)
+
+        # Concurrent tasks
+        concurrent_layout = QHBoxLayout()
+        concurrent_label = QLabel("并发数:")
+        concurrent_label.setFont(QFont("Microsoft YaHei", 9))
+        self.new_extract_concurrent_spin = QSpinBox()
+        self.new_extract_concurrent_spin.setRange(1, 4)
+        self.new_extract_concurrent_spin.setValue(2)
+        concurrent_layout.addWidget(concurrent_label)
+        concurrent_layout.addWidget(self.new_extract_concurrent_spin)
+        concurrent_layout.addStretch()
+        layout.addLayout(concurrent_layout)
+
+        layout.addStretch()
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+
+        self.new_extract_start_btn = QPushButton("开始提取")
+        self.new_extract_start_btn.setFont(QFont("Microsoft YaHei", 10))
+        self.new_extract_start_btn.setStyleSheet("""
+            QPushButton {
+                color: #ffffff;
+                background-color: #0066cc;
+                border: 1px solid #0055aa;
+                padding: 6px 16px;
+            }
+            QPushButton:hover {
+                background-color: #0055aa;
+            }
+        """)
+        self.new_extract_start_btn.clicked.connect(self._on_new_extract_start)
+        btn_layout.addWidget(self.new_extract_start_btn)
+
+        self.new_extract_open_folder_btn = QPushButton("打开文件夹")
+        self.new_extract_open_folder_btn.setFont(QFont("Microsoft YaHei", 10))
+        self.new_extract_open_folder_btn.clicked.connect(self._on_new_extract_open_folder)
+        btn_layout.addWidget(self.new_extract_open_folder_btn)
+
+        layout.addLayout(btn_layout)
+
+        return frame
+
+    def _create_new_extract_log_area(self) -> QFrame:
+        """Create log area"""
+        frame = QFrame()
+        frame.setStyleSheet("""
+            QFrame {
+                background-color: #ffffff;
+                border: 1px solid #d0d0d0;
+            }
+        """)
+
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(5)
+
+        label = QLabel("运行日志")
+        label.setFont(QFont("Microsoft YaHei", 10, QFont.Bold))
+        label.setStyleSheet("color: #333333; border: none;")
+        layout.addWidget(label)
+
+        self.new_extract_log = QTextEdit()
+        self.new_extract_log.setReadOnly(True)
+        self.new_extract_log.setFont(QFont("Consolas", 9))
+        layout.addWidget(self.new_extract_log)
+
+        return frame
+
+    def _on_new_extract_select_file(self):
+        """Select file with URLs"""
+        from PyQt5.QtWidgets import QFileDialog
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择文件",
+            "",
+            "文本文件 (*.txt);;Excel文件 (*.xlsx *.xls);;所有文件 (*.*)"
+        )
+        if file_path:
+            self.new_extract_file_input.setText(file_path)
+
+    def _on_new_extract_start(self):
+        """Start extraction"""
+        file_path = self.new_extract_file_input.text().strip()
+        if not file_path:
+            QMessageBox.warning(self, "提示", "请选择包含视频链接的文件")
+            return
+
+        if not os.path.exists(file_path):
+            QMessageBox.warning(self, "提示", "文件不存在")
+            return
+
+        model = self.new_extract_model_combo.currentText()
+        concurrent = self.new_extract_concurrent_spin.value()
+
+        self.new_extract_start_btn.setEnabled(False)
+        self.new_extract_log.clear()
+        self._new_extract_log("开始提取文案...")
+
+        # Run extract_batch.py in subprocess
+        from PyQt5.QtCore import QThread, pyqtSignal
+        import subprocess
+
+        class ExtractWorker(QThread):
+            log_signal = pyqtSignal(str)
+            finished_signal = pyqtSignal(bool, str)
+
+            def __init__(self, file_path, model, concurrent):
+                super().__init__()
+                self.file_path = file_path
+                self.model = model
+                self.concurrent = concurrent
+
+            def run(self):
+                try:
+                    # Get extract_batch.py path
+                    script_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "extract_batch.py")
+
+                    if not os.path.exists(script_path):
+                        self.finished_signal.emit(False, f"找不到脚本: {script_path}")
+                        return
+
+                    # Run subprocess
+                    self.log_signal.emit(f"文件: {os.path.basename(self.file_path)}")
+                    self.log_signal.emit(f"模型: {self.model}")
+                    self.log_signal.emit(f"并发数: {self.concurrent}")
+                    self.log_signal.emit("=" * 50)
+                    self.log_signal.emit("正在启动子进程...")
+                    self.log_signal.emit(f"加载Whisper {self.model} 模型中，首次需要1-3分钟，请耐心等待...")
+
+                    process = subprocess.Popen(
+                        [sys.executable, script_path, self.file_path, self.model, str(self.concurrent)],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        encoding='utf-8',
+                        errors='replace'
+                    )
+
+                    # Read output line by line
+                    for line in process.stdout:
+                        line = line.rstrip()
+                        if line:
+                            self.log_signal.emit(line)
+
+                    process.wait()
+
+                    if process.returncode == 0:
+                        self.finished_signal.emit(True, "提取完成!")
+                    else:
+                        self.finished_signal.emit(False, f"提取失败，退出码: {process.returncode}")
+
+                except Exception as e:
+                    import traceback
+                    error_msg = f"错误: {str(e)}\n{traceback.format_exc()}"
+                    self.log_signal.emit(error_msg)
+                    self.finished_signal.emit(False, error_msg)
+
+        self.new_extract_worker = ExtractWorker(file_path, model, concurrent)
+        self.new_extract_worker.log_signal.connect(self._new_extract_log)
+        self.new_extract_worker.finished_signal.connect(self._on_new_extract_finished)
+        self.new_extract_worker.start()
+
+    def _new_extract_log(self, message: str):
+        """Add log message"""
+        self.new_extract_log.append(message)
+
+    def _on_new_extract_finished(self, success: bool, message: str):
+        """Handle extraction finished"""
+        self._new_extract_log(message)
+        self.new_extract_start_btn.setEnabled(True)
+
+        if success:
+            QMessageBox.information(self, "完成", message)
+
+    def _on_new_extract_open_folder(self):
+        """Open output folder"""
+        output_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "input", "提取的视频文案")
+        if os.path.exists(output_dir):
+            subprocess.Popen(['explorer', output_dir])
+        else:
+            QMessageBox.warning(self, "提示", f"输出文件夹不存在: {output_dir}")

@@ -64,19 +64,20 @@ class Styles:
         }
     """
 
-    # QSpinBox/QDoubleSpinBox - 确保文字可见
+    # QSpinBox/QDoubleSpinBox - 确保文字和按钮可见
     SPINBOX = """
         QSpinBox, QDoubleSpinBox {
             border: 1px solid #d0d0d0;
             border-radius: 3px;
-            padding: 0px 3px;
+            padding: 2px 3px;
+            padding-right: 18px;
             background-color: #ffffff;
             color: #333333;
-            min-height: 12px;
+            min-height: 18px;
             min-width: 70px;
         }
         QSpinBox:hover, QDoubleSpinBox:hover {
-            border-color: #b0b0b0;
+            border-color: #0066cc;
         }
         QSpinBox:focus, QDoubleSpinBox:focus {
             border-color: #0066cc;
@@ -85,23 +86,59 @@ class Styles:
             background-color: #f0f0f0;
             color: #999999;
         }
-        QSpinBox::up-button, QDoubleSpinBox::up-button,
-        QSpinBox::down-button, QDoubleSpinBox::down-button {
-            width: 14px;
-            border: none;
-            background: #f0f0f0;
+        QSpinBox::up-button, QDoubleSpinBox::up-button {
+            subcontrol-origin: border;
+            subcontrol-position: top right;
+            width: 16px;
+            border-left: 1px solid #d0d0d0;
+            border-bottom: 1px solid #d0d0d0;
+            border-top-right-radius: 3px;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #f8f8f8, stop:1 #e8e8e8);
         }
-        QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+        QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #e0f0ff, stop:1 #c0e0ff);
+        }
+        QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed {
+            background: #b0d0f0;
+        }
+        QSpinBox::down-button, QDoubleSpinBox::down-button {
+            subcontrol-origin: border;
+            subcontrol-position: bottom right;
+            width: 16px;
+            border-left: 1px solid #d0d0d0;
+            border-bottom-right-radius: 3px;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #f8f8f8, stop:1 #e8e8e8);
+        }
         QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
-            background: #e0e0e0;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #e0f0ff, stop:1 #c0e0ff);
+        }
+        QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed {
+            background: #b0d0f0;
         }
         QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
-            width: 6px;
-            height: 6px;
+            width: 0;
+            height: 0;
+            border-left: 4px solid transparent;
+            border-right: 4px solid transparent;
+            border-bottom: 5px solid #555555;
+        }
+        QSpinBox::up-arrow:hover, QDoubleSpinBox::up-arrow:hover {
+            border-bottom-color: #0066cc;
         }
         QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
-            width: 6px;
-            height: 6px;
+            width: 0;
+            height: 0;
+            border-left: 4px solid transparent;
+            border-right: 4px solid transparent;
+            border-top: 5px solid #555555;
+        }
+        QSpinBox::down-arrow:hover, QDoubleSpinBox::down-arrow:hover {
+            border-top-color: #0066cc;
+        }
+        QSpinBox::up-arrow:disabled, QSpinBox::down-arrow:disabled,
+        QDoubleSpinBox::up-arrow:disabled, QDoubleSpinBox::down-arrow:disabled {
+            border-top-color: #cccccc;
+            border-bottom-color: #cccccc;
         }
     """
 
@@ -415,6 +452,26 @@ class Styles:
         }
     """
 
+    # QGroupBox - 设置面板分组框
+    SETTINGS_GROUPBOX = """
+        QGroupBox {
+            border: 1px solid #d0d0d0;
+            border-radius: 3px;
+            margin-top: 8px;
+            padding-top: 6px;
+            background-color: #ffffff;
+            font-family: "Microsoft YaHei";
+            font-size: 9pt;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            subcontrol-position: top left;
+            padding: 0 6px;
+            color: #0066cc;
+            font-weight: bold;
+        }
+    """
+
     # 日志区域样式
     LOG_AREA = """
         QTextEdit {
@@ -487,33 +544,7 @@ def get_input_style():
 
 def get_spin_style():
     """获取数字输入框通用样式"""
-    return """
-        QSpinBox, QDoubleSpinBox {
-            border: 1px solid #d0d0d0;
-            border-radius: 3px;
-            padding: 0px 3px;
-            background-color: #ffffff;
-            color: #333333;
-            min-height: 12px;
-            min-width: 70px;
-        }
-        QSpinBox:hover, QDoubleSpinBox:hover {
-            border-color: #b0b0b0;
-        }
-        QSpinBox:focus, QDoubleSpinBox:focus {
-            border-color: #0066cc;
-        }
-        QSpinBox::up-button, QDoubleSpinBox::up-button,
-        QSpinBox::down-button, QDoubleSpinBox::down-button {
-            width: 14px;
-            border: none;
-            background: #f0f0f0;
-        }
-        QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
-        QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
-            background: #e0e0e0;
-        }
-    """
+    return Styles.SPINBOX
 
 
 def get_label_style():

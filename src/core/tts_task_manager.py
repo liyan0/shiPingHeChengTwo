@@ -3,6 +3,7 @@ import io
 import os
 import re
 import shutil
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, List, Optional
@@ -12,6 +13,17 @@ import aiohttp
 from .tts_api_client import TTSAPIClient
 from .subtitle_api_client import SubtitleAPIClient
 from .product_time_api_client import ProductTimeAPIClient
+
+# 设置文件日志
+_log_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "error_log.txt")
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler(_log_file, encoding='utf-8'),
+    ]
+)
+_logger = logging.getLogger("tts_task_manager")
 
 
 @dataclass
@@ -425,13 +437,21 @@ class TTSTaskManager:
         try:
             # Lazy initialize Whisper transcriber
             if self.whisper_transcriber is None:
+                _logger.info(f"开始初始化 Whisper: model={self.local_model}, device={self.local_device}")
                 from .whisper_transcriber import WhisperTranscriber
+                from ..utils.whisper_model_manager import WhisperModelManager
+                _logger.info("WhisperTranscriber 导入成功")
+                models_dir = WhisperModelManager.get_models_dir()
+                _logger.info(f"models_dir: {models_dir}")
                 self.whisper_transcriber = WhisperTranscriber(
                     model_name=self.local_model,
                     device=self.local_device,
+                    models_dir=models_dir,
                 )
+                _logger.info("WhisperTranscriber 实例创建成功，开始 initialize...")
                 self._log(f"Initializing local Whisper model: {self.local_model} ({self.local_device})...")
                 self.whisper_transcriber.initialize()
+                _logger.info("Whisper initialize 完成")
 
             async with self._lock:
                 self._progress.current_subtitle_task = os.path.basename(audio_path)

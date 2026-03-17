@@ -13,6 +13,8 @@ import tempfile
 import time
 from typing import Callable, List, Optional, Tuple
 
+from src.utils.ffmpeg_manager import FFmpegManager
+
 BATCH_SIZE_NORMAL = 8
 BATCH_SIZE_REVERSE = 4
 INTERMEDIATE_CRF = 16
@@ -99,6 +101,7 @@ def build_batch_concat_cmd(
     height: int,
     output_path: str,
     fps: int = 25,
+    crop_to_square: bool = False,
 ) -> list:
     """Build Stage 1 single-batch command: scale/pad/setsar/fps + concat. No audio.
 
@@ -108,20 +111,22 @@ def build_batch_concat_cmd(
         height: Target height.
         output_path: Output file path.
         fps: Target frame rate.
+        crop_to_square: If True, crop to square (for 1:1 mode). If False, pad with black (for 16:9 mode).
 
     Returns:
         FFmpeg command as list of strings.
     """
-    cmd = ['ffmpeg', '-y', '-threads', '2']
+    cmd = [FFmpegManager.get_ffmpeg_path(), '-y', '-threads', '2']
     for path, start, dur in clips:
         cmd.extend(['-ss', f'{start:.3f}', '-t', f'{dur:.3f}', '-i', path])
 
     filter_parts = []
     concat_inputs = []
     for i in range(len(clips)):
+        # 统一用放大+裁剪，避免黑边
         filter_parts.append(
-            f"[{i}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
-            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,"
+            f"[{i}:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
+            f"crop={width}:{height}:(iw-{width})/2:(ih-{height})/2,"
             f"setsar=1,fps={fps}[v{i}]"
         )
         concat_inputs.append(f"[v{i}]")
@@ -133,8 +138,8 @@ def build_batch_concat_cmd(
     cmd.extend([
         '-filter_complex', ';'.join(filter_parts),
         '-map', '[out]', '-an',
-        '-c:v', 'libx264', '-preset', INTERMEDIATE_PRESET,
-        '-crf', str(INTERMEDIATE_CRF),
+        '-c:v', 'h264_nvenc', '-preset', 'p4',
+        '-cq', str(INTERMEDIATE_CRF),
         '-pix_fmt', 'yuv420p', '-r', str(fps),
         '-video_track_timescale', '12800',
         '-movflags', '+faststart',
@@ -160,7 +165,7 @@ def build_concat_demuxer_cmd(
             f.write(f"file '{escaped}'\n")
 
     return [
-        'ffmpeg', '-y',
+        FFmpegManager.get_ffmpeg_path(), '-y',
         '-f', 'concat', '-safe', '0',
         '-i', concat_list_path,
         '-c', 'copy',

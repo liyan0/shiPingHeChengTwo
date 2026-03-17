@@ -26,6 +26,7 @@ from ..core.copywriting_api_client import CopywritingAPIClient
 from ..core.merge_copywriting_api_client import MergeCopywritingAPIClient
 from ..core.product_time_api_client import ProductTimeAPIClient
 from .theme import get_input_style, get_spin_style, get_label_style
+from .whisper_download_tab import WhisperDownloadTab
 
 
 class ModelQueryWorker(QThread):
@@ -189,6 +190,8 @@ class SettingsPage(QWidget):
         self.tab_widget.addTab(self._create_product_time_api_tab(), "时间段识别API")
         self.tab_widget.addTab(self._create_image_api_tab(), "图片API配置")
         self.tab_widget.addTab(self._create_video_api_tab(), "视频API配置")
+        self._whisper_tab = WhisperDownloadTab()
+        self.tab_widget.addTab(self._whisper_tab, "Whisper下载")
         content_layout.addWidget(self.tab_widget)
 
         # Save button (outside tabs)

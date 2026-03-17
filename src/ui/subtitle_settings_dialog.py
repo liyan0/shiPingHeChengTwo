@@ -17,12 +17,13 @@ from PyQt5.QtWidgets import (
     QInputDialog,
     QMessageBox,
     QGroupBox,
-    QScrollArea,
+    QFontComboBox,
 )
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QFont, QColor, QPainter, QPixmap, QPen, QFontMetrics
+from PyQt5.QtCore import Qt, QTimer, QRect
+from PyQt5.QtGui import QFont, QColor, QPainter, QPixmap, QPen, QFontMetrics, QLinearGradient, QFontDatabase
 
 from ..models.config import SubtitleStyleConfig, SubtitleStyleTemplate
+from ..core.subtitle_effects import normalize_font_name
 
 
 class SubtitleSettingsDialog(QDialog):
@@ -66,6 +67,7 @@ class SubtitleSettingsDialog(QDialog):
         ]
         self._image_dir = image_dir
         self._background_image: Optional[QPixmap] = None
+        self._preview_ratio = "landscape"  # 默认横屏
 
         self._setup_ui()
         self._load_background_image()
@@ -74,7 +76,7 @@ class SubtitleSettingsDialog(QDialog):
     def _setup_ui(self):
         self.setWindowTitle("字幕设置")
         self.setMinimumWidth(500)
-        self.setMinimumHeight(750)
+        self.setMinimumHeight(580)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(15)
@@ -91,6 +93,20 @@ class SubtitleSettingsDialog(QDialog):
         settings_group.setFont(QFont("Microsoft YaHei", 10))
         settings_layout = QVBoxLayout(settings_group)
         settings_layout.setSpacing(10)
+
+        # Font name
+        font_name_layout = QHBoxLayout()
+        font_name_label = QLabel("字体名称:")
+        font_name_label.setFont(QFont("Microsoft YaHei", 9))
+        font_name_label.setFixedWidth(80)
+        self._font_name_combo = QComboBox()
+        self._font_name_combo.setMinimumWidth(200)
+        self._populate_font_list()
+        self._font_name_combo.currentTextChanged.connect(self._on_font_changed)
+        font_name_layout.addWidget(font_name_label)
+        font_name_layout.addWidget(self._font_name_combo)
+        font_name_layout.addStretch()
+        settings_layout.addLayout(font_name_layout)
 
         # Font size
         font_size_layout = QHBoxLayout()
@@ -189,6 +205,22 @@ class SubtitleSettingsDialog(QDialog):
         lr_margin_layout.addStretch()
         settings_layout.addLayout(lr_margin_layout)
 
+        # Letter spacing (字间距)
+        spacing_layout = QHBoxLayout()
+        spacing_label = QLabel("字间距:")
+        spacing_label.setFont(QFont("Microsoft YaHei", 9))
+        spacing_label.setFixedWidth(80)
+        self._letter_spacing_spin = QDoubleSpinBox()
+        self._letter_spacing_spin.setRange(-5.0, 20.0)
+        self._letter_spacing_spin.setValue(self._style.letter_spacing)
+        self._letter_spacing_spin.setSuffix(" px")
+        self._letter_spacing_spin.setDecimals(1)
+        self._letter_spacing_spin.valueChanged.connect(self._on_style_changed)
+        spacing_layout.addWidget(spacing_label)
+        spacing_layout.addWidget(self._letter_spacing_spin)
+        spacing_layout.addStretch()
+        settings_layout.addLayout(spacing_layout)
+
         layout.addWidget(settings_group)
 
         # Preview group
@@ -196,20 +228,25 @@ class SubtitleSettingsDialog(QDialog):
         preview_group.setFont(QFont("Microsoft YaHei", 10))
         preview_layout = QVBoxLayout(preview_group)
 
-        # 创建滚动区域
-        self._scroll_area = QScrollArea()
-        self._scroll_area.setWidgetResizable(False)
-        self._scroll_area.setFixedHeight(400)
-        self._scroll_area.setAlignment(Qt.AlignCenter)
-        self._scroll_area.setStyleSheet("background-color: #333333; border: 1px solid #d0d0d0;")
+        # 预览比例选择
+        ratio_layout = QHBoxLayout()
+        ratio_label = QLabel("预览比例:")
+        self._ratio_combo = QComboBox()
+        self._ratio_combo.addItem("横屏 16:9", "landscape")
+        self._ratio_combo.addItem("竖屏 9:16", "portrait")
+        self._ratio_combo.currentIndexChanged.connect(self._on_ratio_changed)
+        ratio_layout.addWidget(ratio_label)
+        ratio_layout.addWidget(self._ratio_combo)
+        ratio_layout.addStretch()
+        preview_layout.addLayout(ratio_layout)
 
         self._preview_label = QLabel()
         self._preview_label.setAlignment(Qt.AlignCenter)
-        self._scroll_area.setWidget(self._preview_label)
+        self._preview_label.setMinimumHeight(180)
+        self._preview_label.setStyleSheet("background-color: #333333;")
+        preview_layout.addWidget(self._preview_label)
 
-        preview_layout.addWidget(self._scroll_area)
-
-        layout.addWidget(preview_group)
+        layout.addWidget(preview_group, 1)
 
         # Template group
         template_group = QGroupBox("模板")
@@ -256,6 +293,91 @@ class SubtitleSettingsDialog(QDialog):
 
         self._update_controls_enabled()
 
+    def _populate_font_list(self):
+        """填充字体列表，优先显示中文字体"""
+        font_db = QFontDatabase()
+        all_families = font_db.families()
+
+        # 常用中文字体列表（优先显示）
+        chinese_fonts = [
+            "Microsoft YaHei", "微软雅黑",
+            "SimHei", "黑体",
+            "SimSun", "宋体",
+            "KaiTi", "楷体",
+            "FangSong", "仿宋",
+            "STXihei", "华文细黑",
+            "STHeiti", "华文黑体",
+            "STKaiti", "华文楷体",
+            "STSong", "华文宋体",
+            "STFangsong", "华文仿宋",
+            "STZhongsong", "华文中宋",
+            "YouYuan", "幼圆",
+            "LiSu", "隶书",
+            "Source Han Sans CN", "思源黑体",
+            "Source Han Serif CN", "思源宋体",
+            "Noto Sans CJK SC",
+            "Noto Serif CJK SC",
+            "PingFang SC", "苹方",
+            "Hiragino Sans GB",
+            "WenQuanYi Micro Hei", "文泉驿微米黑",
+            "WenQuanYi Zen Hei", "文泉驿正黑",
+        ]
+
+        # 找出系统中存在的中文字体（只保留中文相关，不再混入英文字体）
+        available_chinese = []
+        chinese_set = set(chinese_fonts)
+
+        for family in all_families:
+            if family in chinese_set:
+                available_chinese.append(family)
+            else:
+                # 检查是否包含中文字符（可能是其他中文字体）
+                has_chinese = any('\u4e00' <= ch <= '\u9fff' for ch in family)
+                if has_chinese:
+                    available_chinese.append(family)
+                else:
+                    # 非中文字体不加入列表
+                    pass
+
+        # 按优先级排序中文字体
+        def chinese_priority(font):
+            try:
+                return chinese_fonts.index(font)
+            except ValueError:
+                return len(chinese_fonts)
+
+        available_chinese.sort(key=chinese_priority)
+
+        # 添加到下拉框（仅中文）
+        self._font_name_combo.blockSignals(True)
+        self._font_name_combo.clear()
+
+        # 先添加中文字体
+        if available_chinese:
+            for font in available_chinese:
+                self._font_name_combo.addItem(font)
+
+        # 不再添加英文/其他字体
+
+        # 设置当前选中的字体
+        current_font = self._style.font_name
+        index = self._font_name_combo.findText(current_font)
+        if index >= 0:
+            self._font_name_combo.setCurrentIndex(index)
+        else:
+            # 如果找不到，默认选择第一个
+            if self._font_name_combo.count() > 0:
+                self._font_name_combo.setCurrentIndex(0)
+                self._style.font_name = self._font_name_combo.currentText()
+
+        self._font_name_combo.blockSignals(False)
+
+    def _on_font_changed(self, font_name: str):
+        """字体变更处理"""
+        if font_name:
+            self._style.font_name = font_name
+            self._update_preview()
+
     def _update_color_button(self, button: QPushButton, color: str):
         button.setStyleSheet(f"""
             QPushButton {{
@@ -269,6 +391,7 @@ class SubtitleSettingsDialog(QDialog):
 
     def _load_background_image(self):
         if not os.path.exists(self._image_dir):
+            self._create_default_background()
             return
 
         image_files = []
@@ -280,89 +403,129 @@ class SubtitleSettingsDialog(QDialog):
         if image_files:
             selected = random.choice(image_files)
             self._background_image = QPixmap(selected)
+        else:
+            self._create_default_background()
+
+    def _create_default_background(self):
+        """创建默认的预览背景图（模拟竖屏视频）"""
+        # 创建一个 1080x1920 的竖屏背景
+        width, height = 1080, 1920
+        pixmap = QPixmap(width, height)
+
+        # 使用渐变背景模拟视频画面
+        painter = QPainter(pixmap)
+        from PyQt5.QtGui import QLinearGradient
+        gradient = QLinearGradient(0, 0, 0, height)
+        gradient.setColorAt(0, QColor("#1a1a2e"))
+        gradient.setColorAt(0.5, QColor("#16213e"))
+        gradient.setColorAt(1, QColor("#0f3460"))
+        painter.fillRect(0, 0, width, height, gradient)
+
+        # 添加一些装饰元素让预览更真实
+        painter.setPen(QPen(QColor("#ffffff30"), 2))
+        painter.drawLine(100, 200, width - 100, 200)
+        painter.drawLine(100, height - 400, width - 100, height - 400)
+
+        # 添加提示文字
+        hint_font = QFont("Microsoft YaHei", 24)
+        painter.setFont(hint_font)
+        painter.setPen(QColor("#ffffff50"))
+        painter.drawText(width // 2 - 100, height // 2, "视频预览区域")
+
+        painter.end()
+        self._background_image = pixmap
+
+    def _on_ratio_changed(self):
+        self._preview_ratio = self._ratio_combo.currentData()
+        self._update_preview()
 
     def _update_preview(self):
-        scroll_width = self._scroll_area.viewport().width() or 400
+        # ????/??????????
+        container_width = self._preview_label.parent().width() - 20 if self._preview_label.parent() else 480
+        container_width = max(300, container_width)
+        max_preview_height = 220
 
-        # 默认缩放比例为 1.0
-        scale_ratio = 1.0
-
-        if self._background_image and not self._background_image.isNull():
-            # 计算缩放比例
-            original_width = self._background_image.width()
-            scale_ratio = scroll_width / original_width if original_width > 0 else 1.0
-
-            # 按宽度缩放，保持原始比例
-            scaled = self._background_image.scaledToWidth(
-                scroll_width,
-                Qt.SmoothTransformation
-            )
-            preview_width = scaled.width()
-            preview_height = scaled.height()
+        if self._preview_ratio == "landscape":
+            # ?? 16:9
+            preview_width = container_width
+            preview_height = int(container_width * 9 / 16)
+            if preview_height > max_preview_height:
+                preview_height = max_preview_height
+                preview_width = int(preview_height * 16 / 9)
+            sim_width, sim_height = 1920, 1080
         else:
-            preview_width = scroll_width
-            preview_height = 400
+            # ?? 9:16
+            preview_height = min(280, max_preview_height)
+            preview_width = int(preview_height * 9 / 16)
+            sim_width, sim_height = 1080, 1920
+
+        scale_ratio = preview_width / sim_width
 
         pixmap = QPixmap(preview_width, preview_height)
         pixmap.fill(QColor("#333333"))
 
-        # Track image display area for subtitle positioning
-        img_x, img_y, img_width, img_height = 0, 0, preview_width, preview_height
-
         if self._background_image and not self._background_image.isNull():
-            scaled = self._background_image.scaledToWidth(
-                scroll_width,
-                Qt.SmoothTransformation
+            scaled = self._background_image.scaled(
+                preview_width, preview_height,
+                Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
             )
-            img_x = 0
-            img_y = 0
-            img_width = scaled.width()
-            img_height = scaled.height()
-
+            x_offset = (scaled.width() - preview_width) // 2
+            y_offset = (scaled.height() - preview_height) // 2
+            cropped = scaled.copy(x_offset, y_offset, preview_width, preview_height)
             painter = QPainter(pixmap)
-            painter.drawPixmap(img_x, img_y, scaled)
+            painter.drawPixmap(0, 0, cropped)
             painter.end()
 
-        if self._style.enabled:
-            painter = QPainter(pixmap)
-            painter.setRenderHint(QPainter.Antialiasing)
-            painter.setRenderHint(QPainter.TextAntialiasing)
+        # 绘制示例字幕文字
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.TextAntialiasing)
 
-            # 按缩放比例调整字体大小
-            scaled_font_size = max(8, int(self._style.font_size * scale_ratio))
-            font = QFont("Microsoft YaHei", scaled_font_size)
-            painter.setFont(font)
+        # 字体大小：确保最小14像素可见
+        scaled_font_size = max(14, int(self._style.font_size * scale_ratio))
+        font = QFont(normalize_font_name(self._style.font_name), scaled_font_size)
+        font.setBold(True)
+        if self._style.letter_spacing != 0:
+            font.setLetterSpacing(QFont.AbsoluteSpacing, self._style.letter_spacing * scale_ratio)
+        painter.setFont(font)
 
-            sample_text = "示例字幕文本"
-            metrics = QFontMetrics(font)
-            text_width = metrics.horizontalAdvance(sample_text)
-            text_height = metrics.height()
+        sample_text = "示例字幕文本"
 
-            margin_v = int(img_height * self._style.margin_v_percent / 100)
-            x = img_x + (img_width - text_width) // 2
-            y = img_y + img_height - margin_v - text_height // 4
+        # 字幕位置：底部居中（使用矩形布局，避免文本超出画布）
+        margin_v = int(preview_height * self._style.margin_v_percent / 100)
+        margin_l = int(self._style.margin_l * scale_ratio)
+        margin_r = int(self._style.margin_r * scale_ratio)
+        available_width = max(20, preview_width - margin_l - margin_r)
+        available_height = max(20, preview_height - margin_v)
+        text_rect = QRect(margin_l, 0, available_width, available_height)
+        text_flags = Qt.AlignHCenter | Qt.AlignBottom
 
-            # 按缩放比例调整描边宽度
-            scaled_outline_width = max(1, int(self._style.outline_width * scale_ratio))
+        scaled_outline = max(1, int(self._style.outline_width * scale_ratio))
 
-            # Draw outline
-            if self._style.outline_width > 0:
-                outline_color = QColor(self._style.outline_color)
-                pen = QPen(outline_color)
-                pen.setWidth(scaled_outline_width * 2)
-                painter.setPen(pen)
+        # 绘制描边
+        if self._style.outline_width > 0:
+            painter.setPen(QColor(self._style.outline_color))
+            for dx in range(-scaled_outline, scaled_outline + 1):
+                for dy in range(-scaled_outline, scaled_outline + 1):
+                    if dx != 0 or dy != 0:
+                        painter.drawText(text_rect.translated(dx, dy), text_flags, sample_text)
 
-                for dx in range(-scaled_outline_width, scaled_outline_width + 1):
-                    for dy in range(-scaled_outline_width, scaled_outline_width + 1):
-                        if dx != 0 or dy != 0:
-                            painter.drawText(x + dx, y + dy, sample_text)
+        # 绘制主文字
+        painter.setPen(QColor(self._style.primary_color))
+        painter.drawText(text_rect, text_flags, sample_text)
 
-            # Draw text
-            primary_color = QColor(self._style.primary_color)
-            painter.setPen(primary_color)
-            painter.drawText(x, y, sample_text)
+        # 如果字幕禁用，显示半透明遮罩提示
+        if not self._style.enabled:
+            painter.fillRect(0, 0, preview_width, preview_height, QColor(0, 0, 0, 128))
+            painter.setPen(QColor("#ffffff"))
+            hint_font = QFont("Microsoft YaHei", 14)
+            painter.setFont(hint_font)
+            hint_text = "字幕已禁用"
+            hint_metrics = QFontMetrics(hint_font)
+            hint_x = (preview_width - hint_metrics.horizontalAdvance(hint_text)) // 2
+            painter.drawText(hint_x, preview_height // 2, hint_text)
 
-            painter.end()
+        painter.end()
 
         self._preview_label.setPixmap(pixmap)
         self._preview_label.setFixedSize(preview_width, preview_height)
@@ -377,6 +540,7 @@ class SubtitleSettingsDialog(QDialog):
 
     def _update_controls_enabled(self):
         enabled = self._style.enabled
+        self._font_name_combo.setEnabled(enabled)
         self._font_size_spin.setEnabled(enabled)
         self._primary_color_btn.setEnabled(enabled)
         self._outline_color_btn.setEnabled(enabled)
@@ -384,6 +548,7 @@ class SubtitleSettingsDialog(QDialog):
         self._margin_spin.setEnabled(enabled)
         self._margin_l_spin.setEnabled(enabled)
         self._margin_r_spin.setEnabled(enabled)
+        self._letter_spacing_spin.setEnabled(enabled)
 
     def _on_enabled_changed(self, state):
         self._style.enabled = state == Qt.Checked
@@ -396,6 +561,7 @@ class SubtitleSettingsDialog(QDialog):
         self._style.margin_v_percent = self._margin_spin.value()
         self._style.margin_l = self._margin_l_spin.value()
         self._style.margin_r = self._margin_r_spin.value()
+        self._style.letter_spacing = self._letter_spacing_spin.value()
         self._update_preview()
 
     def _on_primary_color_click(self):
@@ -434,13 +600,19 @@ class SubtitleSettingsDialog(QDialog):
         self._style.margin_v_percent = template.style.margin_v_percent
         self._style.margin_l = template.style.margin_l
         self._style.margin_r = template.style.margin_r
+        self._style.letter_spacing = template.style.letter_spacing
 
         self._enabled_checkbox.setChecked(self._style.enabled)
+        # 更新字体选择
+        font_index = self._font_name_combo.findText(self._style.font_name)
+        if font_index >= 0:
+            self._font_name_combo.setCurrentIndex(font_index)
         self._font_size_spin.setValue(self._style.font_size)
         self._outline_width_spin.setValue(self._style.outline_width)
         self._margin_spin.setValue(self._style.margin_v_percent)
         self._margin_l_spin.setValue(self._style.margin_l)
         self._margin_r_spin.setValue(self._style.margin_r)
+        self._letter_spacing_spin.setValue(self._style.letter_spacing)
         self._update_color_button(self._primary_color_btn, self._style.primary_color)
         self._update_color_button(self._outline_color_btn, self._style.outline_color)
         self._update_controls_enabled()

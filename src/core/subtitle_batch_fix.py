@@ -12,7 +12,7 @@ from typing import Callable, List, Optional
 from .subtitle_splitter import split_long_segments
 
 
-def fix_srt_file(path: str, max_chars: int = 12) -> bool:
+def fix_srt_file(path: str, max_chars: int = 8) -> bool:  # 从12改成8，适配1:1视频
     """Read an SRT file, re-split with improved algorithm, and overwrite.
 
     Returns True if the file was modified, False if unchanged or on error.
@@ -36,7 +36,7 @@ def fix_srt_file(path: str, max_chars: int = 12) -> bool:
 
 def batch_fix_srt_files(
     dirs: List[str],
-    max_chars: int = 12,
+    max_chars: int = 8,  # 从12改成8，适配1:1视频
     callback: Optional[Callable[[str, bool], None]] = None,
 ) -> dict:
     """Scan *dirs* for .srt files and fix them in-place.

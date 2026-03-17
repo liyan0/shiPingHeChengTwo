@@ -9,6 +9,8 @@ import aiohttp
 
 from .video_scraper_client import VideoScraperClient, VideoInfo
 from .whisper_transcriber import WhisperTranscriber
+from ..utils.ffmpeg_manager import FFmpegManager
+from ..utils.whisper_model_manager import WhisperModelManager
 
 
 @dataclass
@@ -145,7 +147,7 @@ class ExtractCopywritingTaskManager:
         try:
             import subprocess
             cmd = [
-                "ffmpeg", "-y",
+                FFmpegManager.get_ffmpeg_path(), "-y",
                 "-i", video_path,
                 "-vn",
                 "-acodec", "pcm_s16le",
@@ -250,40 +252,37 @@ class ExtractCopywritingTaskManager:
                 self._log(f"[{index + 1}] Failed to download video")
                 return False
 
-            # Step 3: Extract audio
-            await self._wait_if_paused()
-            if self._stopped:
-                return False
-
-            self._progress.current_task = f"[{index + 1}] Extracting audio..."
-            self._update_progress()
-            self._log(f"[{index + 1}] Extracting audio...")
-
-            audio_path = os.path.join(self.temp_dir, f"audio_{index}_{datetime.now().strftime('%H%M%S')}.wav")
-
-            if not await self._extract_audio_async(video_path, audio_path):
-                self._log(f"[{index + 1}] Failed to extract audio")
-                return False
-
-            # Step 4: Transcribe
+            # Step 3: Transcribe (directly from video, skip audio extraction)
             await self._wait_if_paused()
             if self._stopped:
                 return False
 
             self._progress.current_task = f"[{index + 1}] Transcribing..."
             self._update_progress()
-            self._log(f"[{index + 1}] Transcribing audio...")
+            self._log(f"[{index + 1}] Transcribing video...")
 
-            result = await self._transcribe_async(audio_path)
+            # Use direct transcription from video file
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, self._transcriber.transcribe, video_path)
+
             if not result.success:
                 self._log(f"[{index + 1}] Transcription failed: {result.error}")
                 return False
 
-            # Step 5: Save result
+            # Convert to Simplified Chinese
+            text = result.text
+            try:
+                from opencc import OpenCC
+                converter = OpenCC('t2s')
+                text = converter.convert(text)
+            except Exception as e:
+                self._log(f"[{index + 1}] Warning: Failed to convert to Simplified Chinese: {e}")
+
+            # Step 4: Save result
             self._progress.current_task = f"[{index + 1}] Saving..."
             self._update_progress()
 
-            saved_path = self._save_copywriting(title, result.text)
+            saved_path = self._save_copywriting(title, text)
             self._log(f"[{index + 1}] Saved: {os.path.basename(saved_path)}")
 
             async with self._lock:
@@ -296,8 +295,8 @@ class ExtractCopywritingTaskManager:
             return False
 
         finally:
-            # Cleanup temp files
-            self._cleanup_temp_files(video_path, audio_path)
+            # Cleanup temp files (only video now, no audio)
+            self._cleanup_temp_files(video_path)
 
     async def _process_with_retry(self, task: ExtractCopywritingTaskInfo) -> bool:
         """Process URL with retry logic"""

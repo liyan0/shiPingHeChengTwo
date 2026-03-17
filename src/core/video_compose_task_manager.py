@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple
 
 from ..models.config import SubtitleStyleConfig, BlurredBorderConfig, OverlayMaterialConfig, PipConfig, TitleStyleConfig
+from ..utils.ffmpeg_manager import FFmpegManager
 from .ffmpeg_pipeline import (
     BATCH_SIZE_NORMAL,
     INTERMEDIATE_CRF,
@@ -154,6 +155,16 @@ class VideoComposeTaskManager:
     async def _wait_if_paused(self):
         await self._pause_event.wait()
 
+    def _get_base_name(self, filename: str) -> str:
+        """Remove all extensions from filename (e.g., 'test.mp3.mp3' -> 'test')"""
+        name = filename
+        while True:
+            base, ext = os.path.splitext(name)
+            if not ext or base == name:
+                break
+            name = base
+        return name
+
     def _get_files_by_extension(self, directory: str, extensions: set) -> List[str]:
         """Get all files with specified extensions in a directory"""
         if not os.path.exists(directory):
@@ -283,19 +294,44 @@ class VideoComposeTaskManager:
             return []
         if not self.overlay_material_dir:
             return []
+
         result = []
-        for folder_name, opacity_int in self.overlay_material_config.selections.items():
-            folder_path = os.path.join(self.overlay_material_dir, folder_name)
-            if not os.path.isdir(folder_path):
-                continue
-            videos = self._get_files_by_extension(folder_path, self.SUPPORTED_VIDEO_EXTENSIONS)
-            if not videos:
-                continue
-            chosen = random.choice(videos)
-            input_idx = self._count_inputs(cmd)
-            cmd.extend(['-stream_loop', '-1', '-i', chosen])
-            result.append((input_idx, opacity_int / 100.0))
-            self._log(f"Overlay: {folder_name} -> {os.path.basename(chosen)} (opacity={opacity_int}%)")
+        selections = self.overlay_material_config.selections
+
+        # 检查是否是随机模式
+        if "__random__" in selections:
+            opacity_int = selections["__random__"]
+            # 扫描所有子文件夹
+            all_folders = []
+            if os.path.isdir(self.overlay_material_dir):
+                for name in os.listdir(self.overlay_material_dir):
+                    folder_path = os.path.join(self.overlay_material_dir, name)
+                    if os.path.isdir(folder_path):
+                        videos = self._get_files_by_extension(folder_path, self.SUPPORTED_VIDEO_EXTENSIONS)
+                        if videos:
+                            all_folders.append((name, folder_path, videos))
+            if all_folders:
+                # 随机选择一个文件夹
+                folder_name, folder_path, videos = random.choice(all_folders)
+                chosen = random.choice(videos)
+                input_idx = self._count_inputs(cmd)
+                cmd.extend(['-stream_loop', '-1', '-i', chosen])
+                result.append((input_idx, opacity_int / 100.0))
+                self._log(f"Overlay (随机): {folder_name} -> {os.path.basename(chosen)} (opacity={opacity_int}%)")
+        else:
+            # 手动模式：使用选中的文件夹
+            for folder_name, opacity_int in selections.items():
+                folder_path = os.path.join(self.overlay_material_dir, folder_name)
+                if not os.path.isdir(folder_path):
+                    continue
+                videos = self._get_files_by_extension(folder_path, self.SUPPORTED_VIDEO_EXTENSIONS)
+                if not videos:
+                    continue
+                chosen = random.choice(videos)
+                input_idx = self._count_inputs(cmd)
+                cmd.extend(['-stream_loop', '-1', '-i', chosen])
+                result.append((input_idx, opacity_int / 100.0))
+                self._log(f"Overlay: {folder_name} -> {os.path.basename(chosen)} (opacity={opacity_int}%)")
         return result
 
     def _get_audio_files_in_folder(self, folder_path: str) -> List[str]:
@@ -307,7 +343,7 @@ class VideoComposeTaskManager:
         Matches: audio_basename*.srt (e.g., 20260204_001.mp3 -> 20260204_001*.srt)
         """
         audio_dir = os.path.dirname(audio_path)
-        audio_basename = os.path.splitext(os.path.basename(audio_path))[0]
+        audio_basename = self._get_base_name(os.path.basename(audio_path))
 
         if not os.path.exists(audio_dir):
             return None
@@ -450,7 +486,19 @@ class VideoComposeTaskManager:
         """Build FFmpeg subtitle filter string using ASS for accurate line wrapping."""
         from .subtitle_effects import convert_srt_to_ass
         ass_path = convert_srt_to_ass(subtitle_path, self.subtitle_config, height, width)
-        escaped_path = ass_path.replace('\\', '/').replace(':', '\\:').replace("'", "\\'")
+        return self._build_ass_filter(ass_path)
+
+    @staticmethod
+    def _escape_filter_path(path: str) -> str:
+        return path.replace('\\', '/').replace(':', '\\:').replace("'", "\\'")
+
+    def _build_ass_filter(self, ass_path: str) -> str:
+        escaped_path = self._escape_filter_path(ass_path)
+        if os.name == "nt":
+            windir = os.environ.get("WINDIR", "C:/Windows")
+            fonts_dir = os.path.join(windir, "Fonts")
+            escaped_fonts = self._escape_filter_path(fonts_dir)
+            return f"ass='{escaped_path}':fontsdir='{escaped_fonts}'"
         return f"ass='{escaped_path}'"
 
     def _get_audio_duration(self, audio_path: str) -> float:
@@ -458,7 +506,7 @@ class VideoComposeTaskManager:
         try:
             result = subprocess.run(
                 [
-                    'ffprobe', '-v', 'error',
+                    FFmpegManager.get_ffprobe_path(), '-v', 'error',
                     '-show_entries', 'format=duration',
                     '-of', 'default=noprint_wrappers=1:nokey=1',
                     audio_path
@@ -479,7 +527,7 @@ class VideoComposeTaskManager:
         try:
             result = subprocess.run(
                 [
-                    'ffprobe', '-v', 'error',
+                    FFmpegManager.get_ffprobe_path(), '-v', 'error',
                     '-show_entries', 'format=duration',
                     '-of', 'default=noprint_wrappers=1:nokey=1',
                     video_path
@@ -576,7 +624,7 @@ class VideoComposeTaskManager:
         output_folder = os.path.join(self.output_dir, task_info.folder_name)
         os.makedirs(output_folder, exist_ok=True)
 
-        audio_basename = os.path.splitext(os.path.basename(audio_path))[0]
+        audio_basename = self._get_base_name(os.path.basename(audio_path))
         output_filename = f"{audio_basename}.mp4"
         output_path = os.path.join(output_folder, output_filename)
         counter = 1
@@ -626,13 +674,16 @@ class VideoComposeTaskManager:
 
         batches = [clips[i:i + BATCH_SIZE_NORMAL] for i in range(0, len(clips), BATCH_SIZE_NORMAL)]
 
+        # 1:1模式需要裁剪，16:9模式用黑边填充
+        crop_to_square = (width == height)
+
         batch_files = []
         for bi, batch in enumerate(batches):
             await self._wait_if_paused()
             if self._stopped:
                 return False
             batch_path = os.path.join(temp_dir, f"batch_{bi:03d}.mp4")
-            cmd = build_batch_concat_cmd(batch, width, height, batch_path)
+            cmd = build_batch_concat_cmd(batch, width, height, batch_path, crop_to_square=crop_to_square)
             ok = await run_ffmpeg_async(cmd, self._log, f"{task_label} batch {bi}")
             if not ok:
                 self._log(f"{task_label}: Stage 1 batch {bi} failed")
@@ -647,7 +698,7 @@ class VideoComposeTaskManager:
         stage2_path = os.path.join(temp_dir, "stage2.mp4")
         if len(batch_files) == 1:
             cmd = [
-                'ffmpeg', '-y', '-i', batch_files[0],
+                FFmpegManager.get_ffmpeg_path(), '-y', '-i', batch_files[0],
                 '-c', 'copy', '-t', f'{audio_duration:.3f}',
                 '-movflags', '+faststart', stage2_path,
             ]
@@ -694,7 +745,7 @@ class VideoComposeTaskManager:
         """Stage 3: product/border/pip/overlay/subtitle/title + audio -> final."""
         task_label = f"Task #{task_info.index + 1}"
 
-        cmd = ['ffmpeg', '-y', '-threads', '2']
+        cmd = [FFmpegManager.get_ffmpeg_path(), '-y', '-threads', '2']
         # Input 0: stage2 base video
         cmd.extend(['-i', stage2_path])
         next_idx = 1
@@ -822,21 +873,33 @@ class VideoComposeTaskManager:
 
         # Title overlay (rendered before product insertion so product overlays cover it)
         if self.title_config and self.title_config.enabled:
+            title_text = self._get_base_name(os.path.basename(task_info.audio_path))
+
+            # 处理随机特效：如果是 random，随机选择一个实际特效
+            actual_effect_type = self.title_config.effect_type
+            if actual_effect_type == "random":
+                actual_effect_type = random.choice(["none", "fade"])
+                self._log(f"{task_label}: 随机选择标题特效 -> {actual_effect_type}")
+
+            # 创建临时配置副本，使用实际特效
+            from dataclasses import replace
+            title_config_copy = replace(self.title_config, effect_type=actual_effect_type)
+
+            # 统一使用ASS字幕方式（简化，移除花字效果）
             from .subtitle_effects import generate_title_ass
-            title_text = os.path.splitext(os.path.basename(task_info.audio_path))[0]
             title_ass_path = os.path.join(
                 tempfile.gettempdir(), f"title_{task_info.index}_{os.getpid()}.ass"
             )
             generate_title_ass(
                 title_text=title_text,
-                config=self.title_config,
+                config=title_config_copy,
                 video_height=height,
                 video_width=width,
                 duration_ms=int(audio_duration * 1000),
                 output_path=title_ass_path,
             )
-            escaped = title_ass_path.replace('\\', '/').replace(':', '\\:').replace("'", "\\'")
-            filter_parts.append(f"[{current_video.strip('[]')}]ass='{escaped}'[vtitle]")
+            title_ass_filter = self._build_ass_filter(title_ass_path)
+            filter_parts.append(f"[{current_video.strip('[]')}]{title_ass_filter}[vtitle]")
             current_video = "[vtitle]"
 
         # Determine the label for product insertion
@@ -976,14 +1039,48 @@ class VideoComposeTaskManager:
             '-map', f'[{final_video_label}]',
             '-map', audio_map,
             '-t', str(audio_duration),
-            '-c:v', 'libx264', '-preset', 'medium', '-crf', '23',
+            '-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '23',
+            '-pix_fmt', 'yuv420p',
             '-threads:v', '1', '-x264-params', 'rc-lookahead=10:refs=2',
             '-c:a', 'aac', '-b:a', '192k',
             '-movflags', '+faststart',
             output_path,
         ])
 
-        return await run_ffmpeg_async(cmd, self._log, task_label)
+        success = await run_ffmpeg_async(cmd, self._log, task_label)
+
+        # 验证输出文件是否有效
+        if success and os.path.exists(output_path):
+            if not self._verify_output_file(output_path):
+                self._log(f"{task_label}: 输出文件验证失败，删除损坏的文件")
+                try:
+                    os.remove(output_path)
+                except Exception:
+                    pass
+                return False
+
+        return success
+
+    def _verify_output_file(self, file_path: str) -> bool:
+        """验证输出的MP4文件是否有效（检查moov atom）"""
+        try:
+            result = subprocess.run(
+                [
+                    FFmpegManager.get_ffprobe_path(), '-v', 'error',
+                    '-show_entries', 'format=duration',
+                    '-of', 'default=noprint_wrappers=1:nokey=1',
+                    file_path
+                ],
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            )
+            if result.returncode != 0:
+                return False
+            duration = float(result.stdout.strip())
+            return duration > 0
+        except Exception:
+            return False
 
     def _build_product_merge_filters(
         self,
@@ -1076,14 +1173,13 @@ class VideoComposeTaskManager:
             return self._progress
 
         bgm_files = self._get_bgm_files()
-        bgm_file = random.choice(bgm_files) if bgm_files else None
 
         # Pre-cache video durations
         for v in source_videos:
             self._get_video_duration(v)
 
-        if bgm_file:
-            self._log(f"Selected BGM: {os.path.basename(bgm_file)}")
+        if bgm_files:
+            self._log(f"BGM: {len(bgm_files)} 首可用 (每次随机选择)")
         else:
             self._log("No BGM selected (folder empty)")
 
@@ -1117,6 +1213,11 @@ class VideoComposeTaskManager:
                     self._progress.current_task = os.path.basename(task_info.audio_path)
                     self._progress.current_folder = task_info.folder_name
                     self._update_progress()
+
+                # 每次生成视频时随机选择 BGM
+                bgm_file = random.choice(bgm_files) if bgm_files else None
+                if bgm_file:
+                    self._log(f"Task #{task_info.index + 1}: BGM -> {os.path.basename(bgm_file)}")
 
                 # Find subtitle file if subtitle is enabled
                 subtitle_path = None
